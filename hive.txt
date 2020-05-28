@@ -1,0 +1,112 @@
+sqoop import –connect jdbc:mysql://localhost:3306/sqoop –username sqoop -P –table cities –hive-import –hive-overwrite –null-string ‘\\N’ –null-non-string ‘\\N’ –hive-table vikas.cities -m 1
+
+-- Create table in hive
+create table if exists table1
+(cust_id string,
+cust_name string,
+odr_date date,
+shipdt date,
+Courer string,
+recvd_dt date,
+returned_or_not string,
+returned_dt string,
+reason_of_return string)
+row format delimited fields terminated by ',' 
+lines terminated by '\n' 
+stored as textfile 
+tblproperties ("skip.header.line.count"="1", "serialization.null.format"="null", "skip.footer.line.count"="3");
+
+
+-- insert statements
+
+-----load from a file in local os
+load data local inpath '/local/path/to/file'
+
+-----load from a file in hdfs
+load data inpath '/hdfs/path/to/file'
+
+
+-----load from an existing table
+insert into table1
+select col1, col2, col3 from source_table;
+
+-----multi insert statements
+from source_table insert into fedex_table select * where Courer="fedex" insert into dtdc select * where Courer="dtdc"
+
+
+--PARTITIONING AND BUCKETING
+set hive.exec.dynamic.partition=true
+set hive.exec.dynamic.partition.mode=nonstrict
+set hive.enforce.bucketing=true;
+
+---Creation of Table all states 
+create table all states(state string, District string,Enrolments string) 
+row format delimited fields terminated by ',';
+
+---Loading data into created table all states 
+Load data local inpath '/home/hduser/Desktop/AllStates.csv' into table allstates;
+
+---Creation of partition table 
+create table state_part(District string,Enrolments string) PARTITIONED BY(state string);
+
+---Loading data into partition table 
+INSERT OVERWRITE TABLE state_part PARTITION(state)
+SELECT district,enrolments,state from  allstates;
+
+
+---Actual processing and formation of partition tables based on state as partition key
+---There are going to be 38 partition outputs in HDFS storage with the file name as state name. We will check this in this step 
+
+
+-- JOINING AND MEMORY MANAGEMENT
+--stream table for memory management
+
+----use STREAMTABLE to explicitly stream the largest table: saves so much time
+
+select /* STREAMTABLE (table1_large) */ table1_large.col1, table1_large.col2 , table2.col1, table2.col3, table3.col1, table3.col5 
+from table1_large join table2 on (table1_large.col1 = table2.col1) 
+join table3 on (table2.col3 = table3.col1)
+
+----putting the table at the end of the join list also streams the last table
+
+----use MAP joins for small table which is small enough to fit into mapper memory
+----------manually specify small tables to be cached
+select /*MAPJOIN (table_small) */ table_small.col1,table_small.col3, table_medium.col2, table_medium.col4 
+from table_small join table_medium on (table_small.col1 = table_medium.col2);
+
+----------let hive decide small tables to be cached
+set hive.auto.convert.join=true;
+set hive.mapjoin.smalltable.filesize; (default is 25MB)
+--join as you like, if any table is less than 25MB, it will be cached and used for joining. Cannot be used for full outer joins.
+
+----Bucketed map join
+set the hive properties required
+both tables should have equal buckets 
+both tables must be joined on the columns on which they are bucketed
+
+--TEZ
+set hive.execution.engine = tez;
+
+
+--SCD1 on Hive
+select 
+    case when cdc_codes ='Update' Then table3s
+        when cdc_codes = 'NoChange' then table2s
+        when cdc_codes = 'New' then table3s
+        when cdc_codes = 'Deletes' then table2s
+   end
+from (select 
+    case    when table2.col1=table3.col1 and table2.col2=table3.col2 then  'NoChange'
+            when table2.col1=table3.col1 and table2.col2<>table3.col2 then  'Update'
+            when table2.col1 is null then 'New'
+            when table3.col1 is null then 'Deletes'
+             end as cdc_codes,
+        concat(table2.col1,',',table2.col2) as table2s,
+        concat(table3.col1,',',table3.col2) as table3s
+    from table2
+    full outer join table3 on table2.col1=table3.col1) as b1
+	
+
+---add new partitions or create hive tables from folders in req format
+create an external table and then repair it to get the data:
+msck repair table <db_name>.<table_name>
